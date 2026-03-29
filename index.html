@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Casa Labrador Resort — Staff Portal</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,300;1,400&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+
+<!-- Firebase -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-app.js";
+import { getAnalytics } from "https://www.gstatic.com/firebasejs/12.11.0/firebase-analytics.js";
+import {
+  getFirestore, collection, addDoc, onSnapshot,
+  query, orderBy, serverTimestamp, doc, updateDoc, deleteDoc
+} from "https://www.gstatic.com/firebasejs/12.11.0/firebase-firestore.js";
+
+/* ── Casa Labrador Firebase Config ── */
+const firebaseConfig = {
+  apiKey: "AIzaSyBUSXl9dUEBohXne6VwZ04c0HTqytuOuXo",
+  authDomain: "casa-labrador-portal.firebaseapp.com",
+  projectId: "casa-labrador-portal",
+  storageBucket: "casa-labrador-portal.firebasestorage.app",
+  messagingSenderId: "775163462915",
+  appId: "1:775163462915:web:0ffcb03705fafeee7e1536",
+  measurementId: "G-1J1Q6Z2DJ3"
+};
+
+let db = null;
+let unsubscribe = null;
+let firebaseReady = false;
+
+async function initFirebase() {
+  try {
+    const app = initializeApp(firebaseConfig);
+    getAnalytics(app);
+    db = getFirestore(app);
+
+    // Test connection with a lightweight query
+    const q = query(collection(db, "bookings"), orderBy("loggedAt", "desc"));
+    unsubscribe = onSnapshot(q, (snapshot) => {
+      bookings = [];
+      snapshot.forEach(d => bookings.push({ id: d.id, ...d.data() }));
+      renderLog();
+      updateSyncStatus('live');
+    }, (err) => {
+      console.warn("Firestore error:", err);
+      updateSyncStatus('error');
+      fallbackToLocal();
+    });
+
+    firebaseReady = true;
+    updateSyncStatus('connecting');
+  } catch (e) {
+    console.warn("Firebase init failed:", e);
+    fallbackToLocal();
+  }
+}
+
+function fallbackToLocal() {
+  bookings = JSON.parse(localStorage.getItem('cl_bookings') || '[]');
+  renderLog();
+  updateSyncStatus('local');
+}
+
+window._firebaseAddBooking = async function(booking) {
+  if (!firebaseReady || !db) {
+    bookings.unshift(booking);
+    localStorage.setItem('cl_bookings', JSON.stringify(bookings));
+    renderLog();
+    return;
+  }
+  try {
+    await addDoc(collection(db, "bookings"), {
+      ...booking,
+      loggedAt: serverTimestamp()
+    });
+    // onSnapshot will update bookings automatically
+  } catch (e) {
+    console.error("Add failed:", e);
+    showToast('Save failed — stored locally.', true);
+    bookings.unshift(booking);
+    localStorage.setItem('cl_bookings', JSON.stringify(bookings));
+    renderLog();
+  }
+};
+
+window._firebaseInit = initFirebase;
+window._db = () => db;
+window._firebaseReady = () => firebaseReady;
+window._collection = collection;
+window._addDoc = addDoc;
+window._serverTimestamp = serverTimestamp;
+</script>
+
+<style>
+  :root {
+    --green: #2d6a4f;
+    --green-light: #52b788;
+    --green-pale: #d8f3dc;
+    --black: #111;
+    --charcoal: #2c2c2c;
+    --gray: #888;
+    --gray-light: #f5f5f3;
+    --white: #ffffff;
+    --border: #e0e0d8;
+    --font-serif: 'Cormorant Garamond', serif;
+    --font-sans: 'DM Sans', sans-serif;
+    --header-h: 60px;
+    --tab-h: 52px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { font-family: var(--font-sans); background: #f0ede8; color: var(--black); min-height: 100vh; }
+
+  /* ── SYNC BANNER ── */
+  .sync-banner {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 9999;
+    padding: 8px 20px; font-size: 11px; font-family: var(--font-sans);
+    letter-spacing: 0.06em; text-align: center; font-weight: 500;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    transition: all 0.4s ease; transform: translateY(-100%);
+  }
+  .sync-banner.show { transform: translateY(0); }
+  .sync-banner.connecting { background: #fff3cd; color: #856404; }
+  .sync-banner.live       { background: #d8f3dc; color: #1b4332; }
+  .sync-banner.local      { background: #f8d7da; color: #721c24; }
+  .sync-banner.error      { background: #f8d7da; color: #721c24; }
+
+  .sync-dot {
+    width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+  }
+  .connecting .sync-dot { background: #856404; animation: pulse 1.2s infinite; }
+  .live .sync-dot       { background: #2d6a4f; }
+  .local .sync-dot      { background: #721c24; }
+  .error .sync-dot      { background: #721c24; }
+
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  /* ── SETUP OVERLAY ── */
+  #setup-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.85);
+    z-index: 8000; display: none; align-items: center; justify-content: center; padding: 20px;
+  }
+  #setup-overlay.show { display: flex; }
+
+  .setup-card {
+    background: white; border-radius: 4px; padding: 40px 36px;
+    max-width: 540px; width: 100%;
+  }
+  .setup-card h2 {
+    font-family: var(--font-serif); font-size: 22px; font-weight: 600;
+    letter-spacing: 0.05em; margin-bottom: 10px;
+  }
+  .setup-card p { font-size: 13px; color: var(--charcoal); line-height: 1.65; margin-bottom: 14px; }
+  .setup-steps { background: var(--gray-light); border-radius: 3px; padding: 16px 18px; margin-bottom: 20px; }
+  .setup-steps ol { padding-left: 18px; }
+  .setup-steps li { font-size: 12px; color: var(--charcoal); line-height: 2; }
+  .setup-steps a { color: var(--green); text-decoration: none; font-weight: 500; }
+  .setup-steps code {
+    background: #e8e8e4; padding: 1px 5px; border-radius: 3px;
+    font-size: 11px; font-family: monospace;
+  }
+  .setup-btns { display: flex; gap: 10px; flex-wrap: wrap; }
+  .btn-setup-skip {
+    background: var(--gray-light); color: var(--charcoal);
+    border: 1px solid var(--border); padding: 12px 20px;
+    font-family: var(--font-sans); font-size: 11px; letter-spacing: 0.12em;
+    text-transform: uppercase; font-weight: 500; cursor: pointer; border-radius: 3px;
+  }
+  .btn-setup-skip:hover { background: var(--border); }
+  .btn-setup-done {
+    background: var(--green); color: white; border: none;
+    padding: 12px 20px; font-family: var(--font-sans); font-size: 11px;
+    letter-spacing: 0.12em; text-transform: uppercase; font-weight: 500;
+    cursor: pointer; border-radius: 3px; flex: 1;
+  }
+  .btn-setup-done:hover { background: #1e4d38; }
+
+  /* ── LOGIN ── */
+  #login-screen {
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, #1a3d2b 0%, #2d6a4f 55%, #1a3d2b 100%);
+    padding: 20px; position: relative; overflow: hidden;
+  }
+  #login-screen::before {
+    content: ''; position: absolute; inset: 0;
+    background-image: repeating-linear-gradient(45deg, transparent, transparent 40px,
+      rgba(255,255,255,0.025) 40px, rgba(255,255,255,0.025) 80px);
+  }
+  .login-card {
+    background: white; border-radius: 4px; padding: 44px 36px;
+    width: 100%; max-width: 400px; position: relative;
+    box-shadow: 0 24px 80px rgba(0,0,0,0.35);
+  }
+  .login-logo { text-align: center; margin-bottom: 32px; }
+  .clover-icon { font-size: 34px; display: block; margin-bottom: 8px; }
+  .login-logo h1 { font-family: var(--font-serif); font-size: 24px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+  .login-logo .sub { font-size: 10px; letter-spacing: 0.25em; color: var(--green); text-transform: uppercase; display: block; margin-top: 4px; }
+  .login-divider { width: 36px; height: 1px; background: var(--green); margin: 18px auto 28px; }
+
+  .field-label { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gray); display: block; margin-bottom: 7px; font-weight: 500; }
+  .field-input {
+    width: 100%; border: 1px solid var(--border); border-radius: 3px;
+    padding: 13px 14px; font-family: var(--font-sans); font-size: 16px;
+    color: var(--black); background: var(--gray-light);
+    transition: border-color 0.2s, background 0.2s; outline: none;
+    margin-bottom: 16px; -webkit-appearance: none; appearance: none;
+  }
+  .field-input:focus { border-color: var(--green); background: white; }
+
+  .btn-primary {
+    width: 100%; background: var(--green); color: white; border: none;
+    padding: 15px; font-family: var(--font-sans); font-size: 12px;
+    letter-spacing: 0.18em; text-transform: uppercase; font-weight: 500;
+    cursor: pointer; border-radius: 3px; margin-top: 8px; min-height: 50px;
+  }
+  .btn-primary:active { background: #1e4d38; }
+  .login-error { color: #c0392b; font-size: 12px; text-align: center; margin-top: 12px; display: none; }
+
+  /* ── PORTAL ── */
+  #portal-screen { display: none; flex-direction: column; min-height: 100vh; }
+
+  header {
+    background: var(--black); color: white;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 20px; height: var(--header-h);
+    position: sticky; top: 0; z-index: 200; flex-shrink: 0;
+  }
+  .header-brand { display: flex; align-items: center; gap: 12px; }
+  .header-brand .clover { font-size: 18px; }
+  .header-brand h2 { font-family: var(--font-serif); font-size: 16px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
+  .header-brand small { font-size: 8px; letter-spacing: 0.18em; color: var(--green-light); text-transform: uppercase; display: block; }
+  .header-right { display: flex; align-items: center; gap: 10px; }
+  .staff-info { text-align: right; line-height: 1.3; }
+  .staff-info strong { font-size: 12px; font-weight: 500; }
+  .staff-info span { font-size: 9px; color: #aaa; letter-spacing: 0.08em; display: block; }
+  .staff-avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--green); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: white; flex-shrink: 0; }
+  .btn-logout { background: transparent; border: 1px solid #444; color: #aaa; padding: 6px 12px; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; cursor: pointer; border-radius: 2px; font-family: var(--font-sans); white-space: nowrap; min-height: 32px; }
+  .btn-logout:active { border-color: #888; color: white; }
+
+  /* Sync indicator in header */
+  .sync-indicator {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: #aaa;
+    cursor: pointer; padding: 4px 8px; border-radius: 20px; border: 1px solid #333;
+    transition: all 0.2s;
+  }
+  .sync-indicator:hover { border-color: #555; }
+  .sync-indicator .dot { width: 6px; height: 6px; border-radius: 50%; background: #555; flex-shrink: 0; }
+  .sync-indicator.live .dot { background: var(--green-light); }
+  .sync-indicator.live { color: var(--green-light); border-color: #2d6a4f; }
+  .sync-indicator.local .dot { background: #e67e22; }
+  .sync-indicator.local { color: #e67e22; border-color: #6b3a16; }
+  .sync-indicator.connecting .dot { background: #f39c12; animation: pulse 1.2s infinite; }
+  .sync-indicator.connecting { color: #f39c12; border-color: #5a4000; }
+
+  /* TAB BAR */
+  .tab-bar { display: none; background: white; border-bottom: 1px solid var(--border); position: sticky; top: var(--header-h); z-index: 150; flex-shrink: 0; }
+  .tab-bar button { flex: 1; border: none; background: transparent; padding: 0; height: var(--tab-h); font-family: var(--font-sans); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; font-weight: 500; color: var(--gray); cursor: pointer; border-bottom: 2px solid transparent; transition: color 0.2s, border-color 0.2s; }
+  .tab-bar button.active { color: var(--green); border-bottom-color: var(--green); }
+
+  /* PORTAL BODY */
+  .portal-body { display: grid; grid-template-columns: 360px 1fr; flex: 1; }
+
+  /* FORM PANEL */
+  .form-panel { background: white; border-right: 1px solid var(--border); padding: 28px 24px 60px; overflow-y: auto; max-height: calc(100vh - var(--header-h)); position: sticky; top: var(--header-h); align-self: start; }
+  .panel-title { font-family: var(--font-serif); font-size: 20px; font-weight: 600; letter-spacing: 0.04em; margin-bottom: 2px; }
+  .panel-subtitle { font-size: 10px; color: var(--gray); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 24px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
+  .form-section-title { font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--green); font-weight: 500; margin: 20px 0 10px; }
+  .branch-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 4px; }
+  .branch-btn { border: 1px solid var(--border); background: var(--gray-light); padding: 12px 8px; text-align: center; cursor: pointer; border-radius: 3px; font-family: var(--font-sans); font-size: 12px; font-weight: 500; color: var(--charcoal); letter-spacing: 0.04em; min-height: 46px; transition: all 0.15s; }
+  .branch-btn:active, .branch-btn:hover { border-color: var(--green); background: var(--green-pale); }
+  .branch-btn.active { border-color: var(--green); background: var(--green); color: white; }
+  .branch-btn.full-width { grid-column: 1 / -1; }
+  select.field-input { cursor: pointer; }
+  .inline-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .btn-log { width: 100%; background: var(--green); color: white; border: none; padding: 15px; font-family: var(--font-sans); font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; font-weight: 500; cursor: pointer; border-radius: 3px; margin-top: 22px; min-height: 50px; }
+  .btn-log:active { background: #1e4d38; }
+  .btn-log:disabled { background: #aaa; cursor: not-allowed; }
+
+  /* LOG PANEL */
+  .log-panel { background: var(--gray-light); padding: 28px 24px 60px; }
+  .log-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .log-header h3 { font-family: var(--font-serif); font-size: 20px; font-weight: 600; letter-spacing: 0.04em; }
+  .log-controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .filter-select { border: 1px solid var(--border); background: white; padding: 8px 10px; font-size: 11px; font-family: var(--font-sans); border-radius: 3px; color: var(--charcoal); cursor: pointer; outline: none; -webkit-appearance: none; appearance: none; min-height: 38px; }
+  .btn-export { background: var(--black); color: white; border: none; padding: 8px 14px; font-size: 10px; font-family: var(--font-sans); letter-spacing: 0.12em; text-transform: uppercase; font-weight: 500; cursor: pointer; border-radius: 3px; white-space: nowrap; min-height: 38px; }
+  .btn-export:active { background: #333; }
+
+  .log-stats { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; margin-bottom: 20px; }
+  .stat-card { background: white; border: 1px solid var(--border); border-radius: 3px; padding: 14px 16px; }
+  .stat-val { font-family: var(--font-serif); font-size: 28px; font-weight: 300; color: var(--green); line-height: 1; }
+  .stat-lbl { font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gray); margin-top: 3px; }
+
+  .bookings-list { display: flex; flex-direction: column; gap: 10px; }
+  .booking-card { background: white; border: 1px solid var(--border); border-radius: 3px; padding: 16px 18px; display: grid; grid-template-columns: auto 1fr auto; gap: 14px; align-items: start; animation: slideIn 0.25s ease; }
+  @keyframes slideIn { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }
+  .card-branch-tag { background: var(--green); color: white; font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 600; padding: 4px 7px; border-radius: 2px; white-space: nowrap; margin-top: 2px; }
+  .card-main { min-width: 0; }
+  .card-guest { font-family: var(--font-serif); font-size: 17px; font-weight: 600; margin-bottom: 3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card-meta { font-size: 11px; color: var(--gray); line-height: 1.65; }
+  .card-meta strong { color: var(--charcoal); font-weight: 500; }
+  .card-right { text-align: right; flex-shrink: 0; }
+  .card-status { display: inline-block; font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; padding: 3px 7px; border-radius: 20px; font-weight: 600; margin-bottom: 6px; }
+  .status-confirmed  { background: #d8f3dc; color: #1b4332; }
+  .status-pending    { background: #fff3cd; color: #856404; }
+  .status-checkedin  { background: #cce5ff; color: #004085; }
+  .status-checkedout { background: #f0f0f0; color: #666; }
+  .card-logged-by { font-size: 10px; color: #bbb; line-height: 1.4; }
+  .card-logged-by strong { color: var(--gray); }
+
+  /* Last updated tag */
+  .card-sync-tag { font-size: 8px; color: #ccc; margin-top: 4px; letter-spacing: 0.05em; }
+  .card-sync-tag.synced { color: #52b788; }
+
+  .no-bookings { text-align: center; padding: 64px 20px; color: var(--gray); }
+  .no-bookings .icon { font-size: 36px; margin-bottom: 10px; }
+  .no-bookings p { font-size: 13px; line-height: 1.6; }
+
+  /* Loading state */
+  .loading-spinner { text-align: center; padding: 64px 20px; color: var(--gray); }
+  .spinner { width: 28px; height: 28px; border: 2px solid var(--border); border-top-color: var(--green); border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 12px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Toast */
+  .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px); background: var(--green); color: white; padding: 12px 22px; border-radius: 24px; font-size: 13px; font-family: var(--font-sans); box-shadow: 0 8px 24px rgba(0,0,0,0.18); opacity: 0; transition: all 0.3s ease; z-index: 9999; white-space: nowrap; max-width: 90vw; text-align: center; }
+  .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+
+  /* Export snapshot */
+  #export-snapshot { position: fixed; left: -9999px; top: 0; width: 860px; background: white; font-family: var(--font-sans); }
+  .snap-header { background: var(--black); color: white; padding: 24px 32px; display: flex; align-items: center; gap: 16px; }
+  .snap-title h2 { font-family: var(--font-serif); font-size: 22px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+  .snap-title small { font-size: 9px; color: var(--green-light); letter-spacing: 0.2em; text-transform: uppercase; }
+  .snap-meta { margin-left: auto; text-align: right; font-size: 10px; color: #aaa; line-height: 1.7; }
+  .snap-stats { display: grid; grid-template-columns: repeat(4,1fr); border-bottom: 1px solid var(--border); }
+  .snap-stat { padding: 18px 24px; border-right: 1px solid var(--border); }
+  .snap-stat:last-child { border-right: none; }
+  .snap-stat .val { font-family: var(--font-serif); font-size: 28px; font-weight: 300; color: var(--green); }
+  .snap-stat .lbl { font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gray); margin-top: 2px; }
+  .snap-table { width: 100%; border-collapse: collapse; }
+  .snap-table th { background: var(--gray-light); font-size: 8px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gray); padding: 9px 14px; text-align: left; border-bottom: 1px solid var(--border); }
+  .snap-table td { padding: 11px 14px; font-size: 11px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .snap-table tr:last-child td { border-bottom: none; }
+  .snap-table .guest-name { font-family: var(--font-serif); font-size: 14px; font-weight: 600; }
+  .snap-branch { background: var(--green); color: white; font-size: 8px; letter-spacing: 0.12em; text-transform: uppercase; padding: 3px 6px; border-radius: 2px; display: inline-block; }
+  .snap-footer { padding: 14px 32px; background: var(--gray-light); font-size: 9px; color: var(--gray); letter-spacing: 0.07em; display: flex; justify-content: space-between; }
+
+  /* RESPONSIVE */
+  @media (max-width: 700px) {
+    .tab-bar { display: flex; }
+    .portal-body { grid-template-columns: 1fr; }
+    .form-panel { position: static; max-height: none; border-right: none; padding: 20px 16px 80px; display: none; }
+    .form-panel.mob-active { display: block; }
+    .log-panel { padding: 20px 16px 80px; display: none; }
+    .log-panel.mob-active { display: block; }
+    .staff-info { display: none; }
+    .header-brand small { display: none; }
+    .header-brand h2 { font-size: 14px; }
+    .btn-logout { padding: 6px 10px; font-size: 9px; }
+    .log-stats { grid-template-columns: 1fr 1fr; }
+    .log-stats .stat-card:last-child { grid-column: 1 / -1; }
+    .booking-card { grid-template-columns: 1fr auto; grid-template-rows: auto auto; }
+    .card-branch-tag { grid-column: 1; grid-row: 1; width: fit-content; }
+    .card-main { grid-column: 1; grid-row: 2; }
+    .card-right { grid-column: 2; grid-row: 1 / 3; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+    .card-guest { font-size: 15px; white-space: normal; }
+    .log-header { flex-direction: column; gap: 10px; }
+    .log-controls { width: 100%; }
+    .filter-select { flex: 1; min-width: 0; }
+    .btn-export { width: 100%; text-align: center; padding: 10px; }
+    .sync-indicator span { display: none; }
+    .setup-card { padding: 28px 20px; }
+  }
+  @media (max-width: 380px) {
+    .inline-grid { grid-template-columns: 1fr; }
+    .branch-grid { grid-template-columns: 1fr; }
+    .branch-btn.full-width { grid-column: 1; }
+    .log-stats { grid-template-columns: 1fr; }
+    .log-stats .stat-card:last-child { grid-column: 1; }
+    .login-card { padding: 32px 20px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Sync banner (top of page, auto-hide) -->
+<div class="sync-banner" id="sync-banner">
+  <span class="sync-dot"></span>
+  <span id="sync-banner-text">Connecting to live database…</span>
+</div>
+
+<!-- Setup overlay -->
+<div id="setup-overlay">
+  <div class="setup-card">
+    <h2>🔧 Enable Cross-Device Sync</h2>
+    <p>To sync bookings across all devices in real-time, you need a free Firebase project. It takes about 3 minutes to set up.</p>
+    <div class="setup-steps">
+      <ol>
+        <li>Go to <a href="https://console.firebase.google.com" target="_blank">console.firebase.google.com</a></li>
+        <li>Click <strong>Add project</strong> → name it <code>casa-labrador-portal</code></li>
+        <li>Go to <strong>Build → Firestore Database</strong> → Create (Test mode)</li>
+        <li>Go to <strong>Project Settings → Your Apps → Web</strong> → Register App</li>
+        <li>Copy the <code>firebaseConfig</code> object and paste it into this HTML file, replacing the placeholder at the top of the <code>&lt;script type="module"&gt;</code> block</li>
+        <li>Save the file and open it on any device — bookings will sync instantly! ✅</li>
+      </ol>
+    </div>
+    <div class="setup-btns">
+      <button class="btn-setup-skip" onclick="closeSetup()">Skip — Use Locally</button>
+      <button class="btn-setup-done" onclick="closeSetup()">I've set it up — Continue</button>
+    </div>
+  </div>
+</div>
+
+<!-- LOGIN -->
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-logo">
+      <span class="clover-icon">🍀</span>
+      <h1>Casa Labrador</h1>
+      <span class="sub">Resort · Staff Portal</span>
+    </div>
+    <div class="login-divider"></div>
+    <label class="field-label">Staff Name</label>
+    <input class="field-input" id="login-name" type="text" placeholder="Your full name" autocomplete="name">
+    <label class="field-label">Staff ID / Position</label>
+    <input class="field-input" id="login-role" type="text" placeholder="e.g. Front Desk, Manager" autocomplete="off">
+    <label class="field-label">Access Code</label>
+    <input class="field-input" id="login-code" type="password" placeholder="••••••" autocomplete="current-password">
+    <button class="btn-primary" onclick="handleLogin()">Sign In to Portal</button>
+    <p class="login-error" id="login-error"></p>
+  </div>
+</div>
+
+<!-- PORTAL -->
+<div id="portal-screen">
+  <header>
+    <div class="header-brand">
+      <span class="clover">🍀</span>
+      <div>
+        <h2>Casa Labrador</h2>
+        <small>Booking Staff Portal</small>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="sync-indicator connecting" id="sync-indicator" onclick="showSetup()" title="Sync status — click for setup info">
+        <span class="dot"></span>
+        <span id="sync-label">Connecting…</span>
+      </div>
+      <div class="staff-info">
+        <strong id="display-name">—</strong>
+        <span id="display-role">—</span>
+      </div>
+      <div class="staff-avatar" id="display-avatar">—</div>
+      <button class="btn-logout" onclick="handleLogout()">Sign Out</button>
+    </div>
+  </header>
+
+  <div class="tab-bar">
+    <button id="tab-form" class="active" onclick="switchTab('form')">📝 Log Booking</button>
+    <button id="tab-log" onclick="switchTab('log')">📋 View Log</button>
+  </div>
+
+  <div class="portal-body">
+
+    <!-- FORM -->
+    <div class="form-panel mob-active" id="panel-form">
+      <div class="panel-title">Log a Booking</div>
+      <div class="panel-subtitle">Complete all fields to record a reservation</div>
+
+      <div class="form-section-title">Branch</div>
+      <div class="branch-grid">
+        <button class="branch-btn" onclick="selectBranch(this,'Main')">Main</button>
+        <button class="branch-btn" onclick="selectBranch(this,'Deluxe')">Deluxe</button>
+        <button class="branch-btn" onclick="selectBranch(this,&quot;Luke's Villa&quot;)">Luke's Villa</button>
+        <button class="branch-btn" onclick="selectBranch(this,'QC')">QC</button>
+        <button class="branch-btn full-width" onclick="selectBranch(this,&quot;King's Villa&quot;)">King's Villa</button>
+      </div>
+
+      <div class="form-section-title">Guest Information</div>
+      <label class="field-label">Guest Full Name</label>
+      <input class="field-input" id="f-guest" type="text" placeholder="e.g. Juan dela Cruz" autocomplete="off">
+      <label class="field-label">Contact Number</label>
+      <input class="field-input" id="f-contact" type="tel" placeholder="+63 9XX XXX XXXX">
+
+      <div class="form-section-title">Stay Details</div>
+      <div class="inline-grid">
+        <div>
+          <label class="field-label">Check-in</label>
+          <input class="field-input" id="f-checkin" type="date">
+        </div>
+        <div>
+          <label class="field-label">Check-out</label>
+          <input class="field-input" id="f-checkout" type="date">
+        </div>
+      </div>
+      <div class="inline-grid">
+        <div>
+          <label class="field-label">No. of Guests</label>
+          <input class="field-input" id="f-pax" type="number" placeholder="2" min="1" max="100">
+        </div>
+        <div>
+          <label class="field-label">Status</label>
+          <select class="field-input" id="f-status">
+            <option value="Confirmed">Confirmed</option>
+            <option value="Pending">Pending</option>
+            <option value="Checked In">Checked In</option>
+            <option value="Checked Out">Checked Out</option>
+          </select>
+        </div>
+      </div>
+      <label class="field-label">Total Amount (PHP)</label>
+      <input class="field-input" id="f-amount" type="number" placeholder="0.00" inputmode="decimal">
+      <label class="field-label">Notes (optional)</label>
+      <input class="field-input" id="f-notes" type="text" placeholder="Special requests, remarks…">
+
+      <button class="btn-log" id="btn-log" onclick="logBooking()">✅ Log Booking</button>
+    </div>
+
+    <!-- LOG -->
+    <div class="log-panel" id="panel-log">
+      <div class="log-header">
+        <h3>Booking Log</h3>
+        <div class="log-controls">
+          <select class="filter-select" id="filter-branch" onchange="renderLog()">
+            <option value="">All Branches</option>
+            <option value="Main">Main</option>
+            <option value="Deluxe">Deluxe</option>
+            <option value="Luke's Villa">Luke's Villa</option>
+            <option value="QC">QC</option>
+            <option value="King's Villa">King's Villa</option>
+          </select>
+          <select class="filter-select" id="filter-status" onchange="renderLog()">
+            <option value="">All Statuses</option>
+            <option value="Confirmed">Confirmed</option>
+            <option value="Pending">Pending</option>
+            <option value="Checked In">Checked In</option>
+            <option value="Checked Out">Checked Out</option>
+          </select>
+          <button class="btn-export" onclick="exportSnapshot()">⬇ Export Image</button>
+        </div>
+      </div>
+
+      <div class="log-stats">
+        <div class="stat-card"><div class="stat-val" id="stat-total">0</div><div class="stat-lbl">Total Bookings</div></div>
+        <div class="stat-card"><div class="stat-val" id="stat-today">0</div><div class="stat-lbl">Logged Today</div></div>
+        <div class="stat-card"><div class="stat-val" id="stat-revenue">₱0</div><div class="stat-lbl">Total Revenue</div></div>
+      </div>
+
+      <div class="bookings-list" id="bookings-list">
+        <div class="loading-spinner"><div class="spinner"></div><p style="font-size:12px;">Loading bookings…</p></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Export snapshot -->
+<div id="export-snapshot">
+  <div class="snap-header">
+    <div style="font-size:28px;">🍀</div>
+    <div class="snap-title">
+      <h2>Casa Labrador Resort</h2>
+      <small>Staff Booking Log — Export</small>
+    </div>
+    <div class="snap-meta" id="snap-meta"></div>
+  </div>
+  <div class="snap-stats" id="snap-stats"></div>
+  <table class="snap-table">
+    <thead>
+      <tr>
+        <th>#</th><th>Guest</th><th>Branch</th><th>Check-in</th>
+        <th>Check-out</th><th>Pax</th><th>Status</th><th>Amount</th><th>Logged By</th>
+      </tr>
+    </thead>
+    <tbody id="snap-tbody"></tbody>
+  </table>
+  <div class="snap-footer">
+    <span>Casa Labrador Resort · Staff Portal</span>
+    <span id="snap-footer-date"></span>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  /* ── State ── */
+  let currentUser = null;
+  let bookings = [];
+  let selectedBranch = '';
+  let syncMode = 'connecting'; // 'live' | 'local' | 'connecting' | 'error'
+  const ACCESS_CODE = 'casa2024';
+
+  /* ── Sync status UI ── */
+  function updateSyncStatus(mode) {
+    syncMode = mode;
+    const ind = document.getElementById('sync-indicator');
+    const lbl = document.getElementById('sync-label');
+    const banner = document.getElementById('sync-banner');
+    const bannerText = document.getElementById('sync-banner-text');
+
+    ind.className = 'sync-indicator ' + mode;
+
+    const labels = {
+      connecting: 'Connecting…',
+      live: '🟢 Live Sync',
+      local: '⚠ Local Only',
+      error: '⚠ Sync Error'
+    };
+    lbl.textContent = labels[mode] || mode;
+
+    if (mode === 'live') {
+      // Brief green flash then hide
+      banner.className = 'sync-banner live show';
+      bannerText.textContent = '🟢 Connected — bookings sync across all devices in real-time';
+      setTimeout(() => banner.classList.remove('show'), 3000);
+    } else if (mode === 'local') {
+      banner.className = 'sync-banner local show';
+      bannerText.textContent = '⚠ Running locally — changes will not sync to other devices';
+    } else if (mode === 'connecting') {
+      banner.className = 'sync-banner connecting show';
+      bannerText.textContent = 'Connecting to live database…';
+    } else if (mode === 'error') {
+      banner.className = 'sync-banner error show';
+      bannerText.textContent = '⚠ Could not connect — check your Firebase config';
+    }
+  }
+
+  /* ── Setup overlay ── */
+  function showSetup() { document.getElementById('setup-overlay').classList.add('show'); }
+  function closeSetup() { document.getElementById('setup-overlay').classList.remove('show'); }
+
+  /* ── Check if placeholder config ── */
+  function isPlaceholderConfig() {
+    return document.querySelector('script[type="module"]').textContent.includes('AIzaSyDemo_CasaLabrador');
+  }
+
+  /* ── Login ── */
+  function handleLogin() {
+    const name = document.getElementById('login-name').value.trim();
+    const role = document.getElementById('login-role').value.trim();
+    const code = document.getElementById('login-code').value;
+    if (!name || !role) { showErr('Please enter your name and position.'); return; }
+    if (code !== ACCESS_CODE) { showErr('Incorrect access code. Please try again.'); return; }
+
+    currentUser = { name, role, initials: name.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2) };
+    document.getElementById('display-name').textContent = name;
+    document.getElementById('display-role').textContent = role;
+    document.getElementById('display-avatar').textContent = currentUser.initials;
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('portal-screen').style.display = 'flex';
+    document.getElementById('f-checkin').value = new Date().toISOString().split('T')[0];
+
+    // Connect to Firebase
+    updateSyncStatus('connecting');
+    if (window._firebaseInit) window._firebaseInit();
+  }
+
+  function showErr(msg) {
+    const el = document.getElementById('login-error');
+    el.textContent = msg; el.style.display = 'block';
+  }
+
+  function handleLogout() {
+    if (!confirm('Sign out of the portal?')) return;
+    currentUser = null;
+    document.getElementById('login-screen').style.display = 'flex';
+    document.getElementById('portal-screen').style.display = 'none';
+    ['login-name','login-role','login-code'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('login-error').style.display = 'none';
+  }
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && document.getElementById('login-screen').style.display !== 'none') handleLogin();
+  });
+
+  /* ── Tabs ── */
+  function switchTab(tab) {
+    document.getElementById('tab-form').classList.toggle('active', tab==='form');
+    document.getElementById('tab-log').classList.toggle('active',  tab==='log');
+    if (window.innerWidth <= 700) {
+      document.getElementById('panel-form').classList.toggle('mob-active', tab==='form');
+      document.getElementById('panel-log').classList.toggle('mob-active',  tab==='log');
+    }
+  }
+  window.addEventListener('resize', () => {
+    if (window.innerWidth > 700) {
+      document.getElementById('panel-form').style.display = '';
+      document.getElementById('panel-log').style.display  = '';
+    }
+  });
+
+  /* ── Branch select ── */
+  function selectBranch(btn, branch) {
+    document.querySelectorAll('.branch-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    selectedBranch = branch;
+  }
+
+  /* ── Log booking ── */
+  async function logBooking() {
+    if (!selectedBranch) { showToast('Please select a branch.', true); return; }
+    const guest   = document.getElementById('f-guest').value.trim();
+    const contact = document.getElementById('f-contact').value.trim();
+    const checkin  = document.getElementById('f-checkin').value;
+    const checkout = document.getElementById('f-checkout').value;
+    const pax    = document.getElementById('f-pax').value;
+    const status = document.getElementById('f-status').value;
+    const amount = document.getElementById('f-amount').value;
+    const notes  = document.getElementById('f-notes').value.trim();
+
+    if (!guest || !checkin || !checkout || !pax) { showToast('Please fill in all required fields.', true); return; }
+    if (checkout <= checkin) { showToast('Check-out must be after check-in.', true); return; }
+
+    const btn = document.getElementById('btn-log');
+    btn.disabled = true; btn.textContent = 'Saving…';
+
+    const booking = {
+      branch: selectedBranch, guest, contact, checkin, checkout,
+      pax: parseInt(pax), status, amount: parseFloat(amount)||0, notes,
+      loggedBy: currentUser.name, loggedRole: currentUser.role,
+      loggedAt: new Date().toISOString()
+    };
+
+    await window._firebaseAddBooking(booking);
+
+    ['f-guest','f-contact','f-checkout','f-pax','f-amount','f-notes'].forEach(id => document.getElementById(id).value = '');
+    document.querySelectorAll('.branch-btn').forEach(b => b.classList.remove('active'));
+    selectedBranch = '';
+    btn.disabled = false; btn.textContent = '✅ Log Booking';
+
+    showToast('Booking logged! 🎉');
+    if (window.innerWidth <= 700) switchTab('log');
+  }
+
+  /* ── Render log ── */
+  function renderLog() {
+    const fb = document.getElementById('filter-branch')?.value || '';
+    const fs = document.getElementById('filter-status')?.value || '';
+    const filtered = bookings.filter(b => (!fb||b.branch===fb)&&(!fs||b.status===fs));
+
+    const today = new Date().toDateString();
+    document.getElementById('stat-total').textContent   = bookings.length;
+    document.getElementById('stat-today').textContent   = bookings.filter(b => {
+      const d = b.loggedAt?.toDate ? b.loggedAt.toDate() : new Date(b.loggedAt);
+      return d.toDateString() === today;
+    }).length;
+    document.getElementById('stat-revenue').textContent = '₱' + bookings.reduce((s,b)=>s+b.amount,0).toLocaleString('en-PH');
+
+    const list = document.getElementById('bookings-list');
+    if (!filtered.length) {
+      list.innerHTML = `<div class="no-bookings"><div class="icon">📋</div><p>${bookings.length ? 'No bookings match the filter.' : 'No bookings logged yet.<br>Use the form to add your first entry.'}</p></div>`;
+      return;
+    }
+
+    list.innerHTML = filtered.map(b => {
+      const sc = {'Confirmed':'status-confirmed','Pending':'status-pending',
+                  'Checked In':'status-checkedin','Checked Out':'status-checkedout'}[b.status]||'status-confirmed';
+      const rawDate = b.loggedAt?.toDate ? b.loggedAt.toDate() : new Date(b.loggedAt);
+      const logStr  = rawDate.toLocaleDateString('en-PH',{month:'short',day:'numeric'}) + ' ' +
+                      rawDate.toLocaleTimeString('en-PH',{hour:'2-digit',minute:'2-digit'});
+      const nights  = Math.max(1,Math.ceil((new Date(b.checkout)-new Date(b.checkin))/86400000));
+      const isSynced = syncMode === 'live';
+      return `<div class="booking-card">
+        <div class="card-branch-tag">${b.branch}</div>
+        <div class="card-main">
+          <div class="card-guest">${b.guest}</div>
+          <div class="card-meta">
+            <strong>${fmt(b.checkin)}</strong> → <strong>${fmt(b.checkout)}</strong> · ${nights} night${nights!==1?'s':''}
+            <br>${b.pax} guest${b.pax!==1?'s':''}${b.contact?' · '+b.contact:''}${b.amount?' · ₱'+b.amount.toLocaleString():''}
+            ${b.notes?'<br><em>'+b.notes+'</em>':''}
+          </div>
+          <div class="card-sync-tag ${isSynced?'synced':''}">${isSynced?'☁ Synced across devices':'💾 Saved locally'}</div>
+        </div>
+        <div class="card-right">
+          <span class="card-status ${sc}">${b.status}</span>
+          <div class="card-logged-by">by <strong>${b.loggedBy}</strong><br><span style="font-size:9px;color:#ccc;">${logStr}</span></div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  function fmt(d) {
+    if (!d) return '—';
+    const [y,m,day] = d.split('-');
+    return ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+m-1]+' '+parseInt(day)+', '+y;
+  }
+
+  /* ── Export ── */
+  function exportSnapshot() {
+    const fb = document.getElementById('filter-branch').value;
+    const fs = document.getElementById('filter-status').value;
+    const filtered = bookings.filter(b => (!fb||b.branch===fb)&&(!fs||b.status===fs));
+    if (!filtered.length) { showToast('No bookings to export.', true); return; }
+
+    const now = new Date();
+    document.getElementById('snap-meta').innerHTML =
+      `Exported: ${now.toLocaleString('en-PH')}<br>By: ${currentUser.name} (${currentUser.role})<br>`+
+      (fb?'Branch: '+fb:'All Branches')+' · '+(fs||'All Statuses')+`<br>Sync: ${syncMode === 'live' ? '☁ Live' : '💾 Local'}`;
+
+    const totalRev    = filtered.reduce((s,b)=>s+b.amount,0);
+    const totalNights = filtered.reduce((s,b)=>s+Math.max(1,Math.ceil((new Date(b.checkout)-new Date(b.checkin))/86400000)),0);
+    document.getElementById('snap-stats').innerHTML = `
+      <div class="snap-stat"><div class="val">${filtered.length}</div><div class="lbl">Bookings</div></div>
+      <div class="snap-stat"><div class="val">${filtered.reduce((s,b)=>s+b.pax,0)}</div><div class="lbl">Total Guests</div></div>
+      <div class="snap-stat"><div class="val">${totalNights}</div><div class="lbl">Total Nights</div></div>
+      <div class="snap-stat"><div class="val">₱${totalRev.toLocaleString()}</div><div class="lbl">Revenue</div></div>`;
+
+    document.getElementById('snap-tbody').innerHTML = filtered.map((b,i) => {
+      const c = {'Confirmed':'#2d6a4f','Pending':'#856404','Checked In':'#004085','Checked Out':'#666'}[b.status]||'#2d6a4f';
+      return `<tr>
+        <td style="color:#aaa;font-size:10px;">${i+1}</td>
+        <td><div class="guest-name">${b.guest}</div><span style="font-size:10px;color:#aaa;">${b.contact||''}</span></td>
+        <td><span class="snap-branch">${b.branch}</span></td>
+        <td>${fmt(b.checkin)}</td><td>${fmt(b.checkout)}</td>
+        <td>${b.pax}</td>
+        <td><span style="color:${c};font-weight:600;font-size:10px;">${b.status}</span></td>
+        <td>₱${b.amount.toLocaleString()}</td>
+        <td style="font-size:10px;">${b.loggedBy}<br><span style="color:#aaa;font-size:9px;">${b.loggedRole}</span></td>
+      </tr>`;
+    }).join('');
+
+    document.getElementById('snap-footer-date').textContent = `Generated ${now.toLocaleString('en-PH')}`;
+
+    const el = document.getElementById('export-snapshot');
+    el.style.left = '0'; el.style.zIndex = '-1';
+    showToast('Preparing export…');
+    setTimeout(() => {
+      html2canvas(el, {scale:2,useCORS:true,backgroundColor:'#ffffff'}).then(canvas => {
+        el.style.left = '-9999px';
+        const link = document.createElement('a');
+        link.download = `CasaLabrador_BookingLog_${now.toISOString().slice(0,10)}.png`;
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+        showToast('Export downloaded! ✅');
+      });
+    }, 300);
+  }
+
+  /* ── Toast ── */
+  function showToast(msg, isError=false) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.style.background = isError ? '#c0392b' : 'var(--green)';
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 2800);
+  }
+
+  /* Expose renderLog & bookings for Firebase module */
+  window.bookings = bookings;
+  window.renderLog = renderLog;
+  window.showToast = showToast;
+  window.updateSyncStatus = updateSyncStatus;
+
+  /* Make bookings array reactive */
+  Object.defineProperty(window, 'bookings', {
+    get() { return bookings; },
+    set(v) { bookings = v; }
+  });
+</script>
+</body>
+</html>
